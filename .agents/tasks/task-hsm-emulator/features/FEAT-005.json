@@ -1,0 +1,43 @@
+{
+  "id": "FEAT-005",
+  "type": "docs",
+  "description": "OpenAPI annotations, Javadoc, final CI gate, and coverage verification (T31-T34): Add @Operation/@ApiResponse/@Schema annotations to all controllers and DTOs, configure Springdoc title/version/description with disclaimer, add maven-javadoc-plugin with failOnWarnings, verify JaCoCo gates pass, confirm all @Tag(\"security\") tests run in CI, and finalize README with badges. Independent of FEAT-003/FEAT-004 logic — purely additive documentation and CI polish. Depends on FEAT-003 and FEAT-004 being complete.",
+  "status": "pending",
+  "steps": [
+    "Add OpenAPI annotations to g:\\hsm\\src\\main\\java\\com\\example\\hsm\\controller\\KeyController.java: @Tag(name=\"Key Management\", description=\"Key lifecycle operations — CryptoOfficer role required\"). Each endpoint: @Operation(summary=..., description=...) with @ApiResponse entries for 200/201, 400, 401, 403, 404, 409, 410, 422. Add @Parameter annotations on path variables and query params.",
+    "Add OpenAPI annotations to g:\\hsm\\src\\main\\java\\com\\example\\hsm\\controller\\CryptoController.java: @Tag(name=\"Cryptographic Operations\", description=\"Encrypt/decrypt/sign/verify — AppClient role required\"). Full @ApiResponse coverage.",
+    "Add OpenAPI annotations to g:\\hsm\\src\\main\\java\\com\\example\\hsm\\controller\\AuditController.java: @Tag(name=\"Audit Log\", description=\"Read-only audit log access — Auditor role required\").",
+    "Add OpenAPI annotations to g:\\hsm\\src\\main\\java\\com\\example\\hsm\\controller\\UserController.java: @Tag(name=\"User Management\", description=\"User and role management — Admin role required\").",
+    "Add @Schema annotations to all DTO records/classes: description, example values, requiredMode. Ensure no @Schema example includes real key bytes or tokens — use placeholder strings like 'SGVsbG8gV29ybGQ=' for base64 examples.",
+    "Create g:\\hsm\\src\\main\\java\\com\\example\\hsm\\config\\OpenApiConfig.java: @Configuration. @Bean OpenAPI customOpenAPI(): .info(new Info().title(\"Software HSM Emulator API\").version(\"0.1.0\").description(\"Educational software emulator of an HSM. NOT FIPS certified. Not for production key protection. See README for limitations.\").license(new License().name(\"MIT\"))).addSecurityItem(new SecurityRequirement().addList(\"BearerAuth\")).components(new Components().addSecuritySchemes(\"BearerAuth\", new SecurityScheme().type(HTTP).scheme(\"bearer\").bearerFormat(\"HSM token\"))).",
+    "Add springdoc configuration to application.yml: springdoc.api-docs.path=/v3/api-docs, springdoc.swagger-ui.path=/swagger-ui.html, springdoc.swagger-ui.operationsSorter=alpha.",
+    "Write integration test g:\\hsm\\src\\test\\java\\com\\example\\hsm\\controller\\OpenApiTest.java extends AbstractIntegrationTest: allEndpointsAppearInApiDocs — GET /v3/api-docs, parse JSON body, assert paths contain /api/v1/keys, /api/v1/crypto/encrypt, /api/v1/crypto/decrypt, /api/v1/crypto/sign, /api/v1/crypto/verify, /api/v1/audit, /api/v1/audit/verify, /api/v1/users.",
+    "Add Javadoc comments to all public @Service class methods in: KeyService.java, CryptoService.java, AuditService.java, UserService.java, MasterKeyService.java, CryptoEngine.java, TokenService.java. Javadoc must describe parameter semantics and important security notes (e.g. 'Raw key bytes are zeroed after use'). Do NOT document the plain token value in Javadoc.",
+    "Add Javadoc to all Repository interfaces: HsmKeyRepository, HsmUserRepository, HsmKeyAclRepository, AuditRecordRepository, HsmConfigRepository.",
+    "Add maven-javadoc-plugin 3.7.0 to pom.xml (if not already added in FEAT-001): <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-javadoc-plugin</artifactId><version>3.7.0</version><configuration><failOnWarnings>true</failOnWarnings><doclint>all,-missing</doclint></configuration></plugin>. Run 'mvn javadoc:javadoc' to confirm zero warnings on public APIs.",
+    "Update g:\\hsm\\.github\\workflows\\ci.yml: ensure 'mvn --batch-mode verify' runs first (includes Surefire unit + Failsafe integration + JaCoCo gate), then 'mvn --batch-mode dependency-check:check'. Add step to run only @Tag(\"security\") tests as a named step: 'mvn --batch-mode verify -Dgroups=security -Dsurefire.failIfNoSpecifiedTests=false' to confirm security tag coverage.",
+    "Verify g:\\hsm\\README.md is complete and accurate (it was written as a spec document — confirm it matches the implemented API paths, quick-start commands, and project structure). Update the Project Structure section if any package names or file paths changed during implementation. Add JaCoCo coverage badge placeholder: [![Coverage](./badges/jacoco.svg)](target/site/jacoco/index.html) — or use shields.io with the JaCoCo XML report endpoint.",
+    "Run 'mvn --batch-mode verify' locally from g:\\hsm: confirm JaCoCo reports >= 80% line / >= 75% branch. If below threshold: identify under-covered classes, add targeted unit tests for uncovered branches (common candidates: exception handler edge cases, key state machine transitions, CryptoEngine error paths). Do NOT fake coverage with meaningless tests.",
+    "Run 'mvn --batch-mode dependency-check:check' to confirm zero HIGH/CRITICAL CVEs. If any found: upgrade the offending dependency to a patched version, re-verify.",
+    "Confirm all @Tag(\"security\") tests appear in Surefire/Failsafe reports: check target/surefire-reports/ and target/failsafe-reports/ for test names containing the security-tagged test classes (RbacEnforcementTest, AclEnforcementTest, KeyStateGuardTest, AuditIntegrityTest, AuthenticationServiceTest, SecurityFilterTest).",
+    "Create git tag v0.1.0 on main once all CI checks pass: git tag -a v0.1.0 -m 'Initial release: software HSM emulator v0.1.0'. (Only after CI is green — do not tag if tests are failing.)"
+  ],
+  "acceptance_criteria": [
+    "mvn --batch-mode verify passes with BUILD SUCCESS and JaCoCo gate (line >= 80%, branch >= 75%)",
+    "mvn javadoc:javadoc produces zero warnings on public APIs",
+    "OpenApiTest#allEndpointsAppearInApiDocs passes — all 8 API paths present in /v3/api-docs",
+    "GET /swagger-ui.html loads and displays all 4 controller tag groups",
+    "mvn dependency-check:check reports zero HIGH or CRITICAL CVEs",
+    "All @Tag(\"security\") tests appear in CI test reports (at least 25 security-tagged test methods)",
+    "README.md quick-start instructions are accurate — docker compose up -d db + export HSM_MASTER_PASSPHRASE + mvn spring-boot:run works end-to-end",
+    "git tag v0.1.0 exists on main (only after green CI)"
+  ],
+  "verification": [
+    "cd g:\\hsm && mvn --batch-mode verify — BUILD SUCCESS, JaCoCo line >= 80%, branch >= 75%",
+    "cd g:\\hsm && mvn javadoc:javadoc — zero warnings",
+    "cd g:\\hsm && mvn --batch-mode verify -Dgroups=security — all security tests pass",
+    "cd g:\\hsm && mvn --batch-mode dependency-check:check — zero HIGH/CRITICAL CVEs"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

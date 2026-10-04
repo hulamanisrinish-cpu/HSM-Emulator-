@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Project scaffold (T01-T03): Initialize Maven project with all pinned dependencies, configure JaCoCo gates, create Docker Compose and application config, write AbstractIntegrationTest base class, and create GitHub Actions CI skeleton. This is the foundation all other FEATs depend on.",
+  "status": "pending",
+  "steps": [
+    "Create g:\\hsm\\pom.xml with groupId=com.example, artifactId=hsm-emulator, version=0.1.0-SNAPSHOT, Java 17 source/target. Parent: spring-boot-starter-parent 3.2.5. Dependencies (all pinned exact versions): spring-boot-starter-web, spring-boot-starter-data-jpa, spring-boot-starter-security, springdoc-openapi-starter-webmvc-ui:2.5.0, postgresql:42.7.3 (runtime), org.bouncycastle:bcprov-jdk18on:1.78.1, org.testcontainers:testcontainers-bom:1.19.8 (BOM import), org.testcontainers:postgresql, junit-jupiter (via spring-boot-starter-test), org.mockito:mockito-core (via spring-boot-starter-test), org.flywaydb:flyway-core (via spring-boot-starter-data-jpa transitive — verify or add explicit flyway-core:10.12.0), com.fasterxml.jackson.core:jackson-databind (transitive via web starter). Plugins: maven-compiler-plugin 3.13.0 (Java 17), maven-surefire-plugin 3.2.5 (unit tests, excludes **/*IT.java), maven-failsafe-plugin 3.2.5 (integration tests, includes **/*IT.java), jacoco-maven-plugin 0.8.12 (prepare-agent + report + check goals; check: LINE >= 0.80, BRANCH >= 0.75), maven-javadoc-plugin 3.7.0 (failOnWarnings=true), dependency-check-maven 10.0.2 (OWASP CVE scan, failBuildOnCVSS=7).",
+    "Create g:\\hsm\\src\\main\\java\\com\\example\\hsm\\HsmApplication.java — @SpringBootApplication main class.",
+    "Create g:\\hsm\\docker-compose.yml with service 'db': image postgres:15-alpine, environment POSTGRES_DB=hsmdb, POSTGRES_USER=hsm, POSTGRES_PASSWORD=hsm_secret, ports 5432:5432, named volume hsm_pgdata.",
+    "Create g:\\hsm\\src\\main\\resources\\application.yml: spring.datasource.url=jdbc:postgresql://localhost:5432/hsmdb, username=hsm, password=hsm_secret; spring.jpa.hibernate.ddl-auto=validate; spring.flyway.enabled=true; spring.flyway.locations=classpath:db/migration; logging.level.org.hibernate.SQL=DEBUG (dev only). HSM config section: hsm.master-key.iterations=310000, hsm.master-key.salt-length=16.",
+    "Create g:\\hsm\\src\\main\\resources\\application-test.yml: override spring.flyway.enabled=false; spring.jpa.hibernate.ddl-auto=create-drop. (AbstractIntegrationTest uses @DynamicPropertySource to override datasource URL from Testcontainers — Flyway is disabled here; schema is created by Hibernate from entities in test mode.)",
+    "Create g:\\hsm\\src\\test\\java\\com\\example\\hsm\\AbstractIntegrationTest.java: @SpringBootTest(webEnvironment=RANDOM_PORT) + @Testcontainers. Static field: @Container static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(\"postgres:15-alpine\").withDatabaseName(\"hsm_test\").withUsername(\"hsm\").withPassword(\"hsm\"). @DynamicPropertySource static method registers spring.datasource.url/username/password from container. Also set environment property HSM_MASTER_PASSPHRASE=test-passphrase-for-ci-only via @DynamicPropertySource.",
+    "Create g:\\hsm\\.github\\workflows\\ci.yml: trigger push+PR; job 'build' on ubuntu-latest; steps: checkout@v4, setup-java@v4 (java-version=17, distribution=temurin), cache@v4 (path=~/.m2, key=${{ hashFiles('**/pom.xml') }}), run 'mvn --batch-mode verify', upload-artifact@v4 (name=jacoco-report, path=target/site/jacoco/), run 'mvn --batch-mode dependency-check:check'.",
+    "Create g:\\hsm\\.gitignore: target/, *.class, *.jar, .env, *.env, .idea/, *.iml, .vscode/, *.DS_Store.",
+    "Run 'mvn --batch-mode compile -DskipTests' from g:\\hsm to confirm the project compiles. Fix any dependency resolution issues."
+  ],
+  "acceptance_criteria": [
+    "mvn --batch-mode compile -DskipTests completes with BUILD SUCCESS",
+    "pom.xml contains all required dependencies with exact pinned versions",
+    "docker-compose.yml starts postgres:15-alpine successfully",
+    "AbstractIntegrationTest.java compiles and its @Container field uses postgres:15-alpine",
+    "ci.yml contains the verify step and jacoco artifact upload"
+  ],
+  "verification": [
+    "cd g:\\hsm && mvn --batch-mode compile -DskipTests — expect BUILD SUCCESS",
+    "cd g:\\hsm && mvn --batch-mode test -pl . -Dtest=NONEXISTENT -DfailIfNoTests=false — confirm test infrastructure wires up without errors"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

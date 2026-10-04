@@ -1,0 +1,14 @@
+# Test profile — used by AbstractIntegrationTest via Testcontainers.
+# Flyway is disabled; Hibernate creates the schema from entities (create-drop).
+# Datasource URL/username/password are overridden at runtime by @DynamicPropertySource.
+spring:
+  flyway:
+    enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG

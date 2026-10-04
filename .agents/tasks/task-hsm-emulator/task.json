@@ -1,0 +1,7 @@
+{
+  "task_id": "task-hsm-emulator",
+  "task_description": "Build a complete greenfield Java 17 / Spring Boot 3.x software HSM emulator from scratch: Maven project scaffold, core crypto engine (AES-256-GCM, RSA-2048, EC P-256, PBKDF2 master key), PostgreSQL persistence with Flyway migrations, Spring Security token auth (Argon2id), full key lifecycle REST API, cryptographic operations API, hash-chained audit log, user/role management, security hardening tests for all STRIDE threat items, OpenAPI/Swagger docs, GitHub Actions CI, and a comprehensive README. 34 tasks across 9 phases.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005"],
+  "blocked_reason": null
+}
