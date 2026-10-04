@@ -18,30 +18,77 @@ C4Context
 
 ### Container diagram (deployment units + runtime components)
 
+> **Note:** This is the C4 *Container* view. Some Markdown renderers do not support
+> the C4 plugin — if the Mermaid below shows as a code block only, scroll down for a
+> plain-text (ASCII) rendering of the same architecture.
+
 ```mermaid
 C4Container
     title HSM Emulator — Container Diagram
 
-    Person(customer, "Customer (operator)", "Admin / CryptoOfficer / AppClient / Auditor")
+    Person(customer, "Customer (operator)", "Admin · CryptoOfficer · AppClient · Auditor")
     Person(app, "HSM Client", "cURL / Swagger UI / SDK")
 
-    System_Boundary(hsm, "HSM Emulator (single Spring Boot 3 JVM)") {
-        Container(app, "Spring Boot 3.2 App", "Java 17",
-            "REST controllers, @PreAuthorize RBAC, JWT-less Bearer token auth (Argon2id), envelope-encryption crypto services, hash-chained audit service, Flyway migrations")
-        Container db, "PostgreSQL 15", "PostgreSQL",
-            "hsm_keys (wrapped DEK, IV, auth tag) · hsm_users (Argon2id token hash + role + ACL) · hsm_key_acls · hsm_audit_log (hash chain) · hsm_config (master key salt)")
-        Container(lb, "HTTPS Terminator", "nginx / Traefik",
-            "Terminates TLS, forwards to the app on :8080, rate-limits and rejects malformed requests at the edge")
+    System_Boundary(hsm, "HSM Emulator") {
+        System(app, "Spring Boot 3.2 App", "Java 17",
+            "REST controllers, @PreAuthorize RBAC, Argon2id auth, envelope-encryption crypto services, hash-chained audit service, Flyway migrations")
+        System_Ext(db, "PostgreSQL 15", "PostgreSQL",
+            "hsm_keys (wrapped DEK, IV, auth tag) · hsm_users (Argon2id hash) · hsm_key_acls · hsm_audit_log (hash chain) · hsm_config")
+        System_Ext(lb, "HTTPS Terminator", "nginx / Traefik",
+            "Terminates TLS, forwards to :8080, rate-limits, rejects malformed requests at the edge")
     }
 
-    Boundary(securityBoundary, "🔒 Security boundary", "red", [
-        Container(app, "Spring Boot 3.2 App", "Java 17", ""),
-        Container(db, "PostgreSQL 15", "PostgreSQL", "")
-    ])
+    Rel(customer, app, "HTTPS + Bearer token", "curl / Swagger UI / SDK")
+    Rel(app, db, "JDBC / Spring Data JPA + Flyway", "Docker network")
+    Rel(lb, app, "HTTP/1.1 → :8080", "Docker network")
+```
 
-    Rel(customer, app, "curl / Swagger UI / SDK", "HTTPS + Bearer token")
-    Rel(app, db, "JDBC / Spring Data JPA + Flyway", "local network")
-    Rel(lb, app, "HTTP/1.1 → :8080", "local network")
+### ASCII architecture (plain Markdown fallback)
+
+```
+  Client Layer (Admin · CryptoOfficer · AppClient · Auditor)
+                     │  Bearer Token + JSON
+                     ▼
+  ┌──────────────────────────────────────────────────────────────┐
+  │              🔒 SECURITY BOUNDARY (Docker network)              │
+  │                                                              │
+  │   ┌─────────────────────┐        ┌─────────────────────┐     │
+  │   │ HTTPS Terminator    │  HTTP  │  Spring Boot 3.2    │     │
+  │   │ (nginx / Traefik)   │───────▶│  Application (JVM)  │     │
+  │   └─────────────────────┘        └─────────────────────┘     │
+  │           │  TLS                         │  JDBC / JPA       │
+  │           ▼                              ▼                   │
+  │   ┌─────────────────────┐        ┌─────────────────────┐     │
+  │   │ PostgreSQL 15       │ ◀───────│  Flyway + JPA     │     │
+  │   │ hsm_keys · hsm_users│        │  hsm_key_acls     │     │
+  │   │ hsm_audit_log       │        │  hsm_config       │     │
+  │   └─────────────────────┘        └─────────────────────┘     │
+  │                                                              │
+  │   Security filters (TokenAuthenticationFilter):              │
+  │   • 401 oracle for bad/unknown token                         │
+  │   • Argon2id authentication                                │
+  └──────────────────────────────────────────────────────────────┘
+
+
+  App-internal layer breakdown (Spring Boot 3.2 JVM)
+  ──────────────────────────────────────────────────────────────
+
+  [ Edge ]    SecurityConfig (filter chain) · TokenAuthenticationFilter · HsmPrincipal
+  [ API ]     UserController · KeyController · CryptoController · AuditController
+  [ Service ] UserService · KeyService · CryptoService · AuditService
+  [ Crypto ]  CryptoEngine (JCA: AES-256-GCM · RSA-2048 · EC P-256) · MasterKeyService (PBKDF2)
+  [ Audit ]   AuditService (SHA-256 hash-chained log, REQUIRES_NEW for DENIED/ERROR)
+  [ Persistence ] Spring Data JPA · Flyway migrations · PostgreSQL 15
+
+  Key security controls in the container boundary:
+  • Envelope encryption — every DEK is AES-256-GCM wrapped with a PBKDF2-derived master key;
+    the master key never leaves the JVM heap and is never persisted.
+  • Authentication oracle — the 401 response is identical for unknown user, expired token,
+    and malformed token (no oracle leakage).
+  • Token storage — only the Argon2id hash is written to PostgreSQL; raw tokens are never
+    stored (Testcontainers + docker-compose verified at runtime).
+  • Hash-chained audit log — each record commits to the previous hash; tamper is detectable
+    via GET /audit/verify, which returns { valid: true|false, firstTamperedSequence }.
 ```
 
 ### Key security properties visible across the stack
@@ -55,7 +102,7 @@ C4Container
 | **In-memory master key** | `MasterKeyService` | Derived once per startup from `HSM_MASTER_PASSPHRASE`; zeroed on shutdown |
 | **Plaintext never in logs/DTOs** | `HsmUser.toString()` / `HsmKey.toString()` / controllers | Secret fields excluded; `SecureArrays#fill` zeroes ephemeral key material after use |
 | **Hash-chained audit log** | `AuditService` | `chainHash(N) = SHA256(prev ‖ seq ‖ ts ‖ principal ‖ action ‖ outcome)`; tamper-evident, append-only, single-writer |
-| **Separation of duties** | `@PreAuthorize` + ACLs | Admin ≫ `CryptoOfficer ≫ AppClient ≫ Auditor boundary; per-key ACL enforced in `CryptoService` before any unwrap |
+| **Separation of duties** | `@PreAuthorize` + ACLs | Admin ≫ `CryptoOfficer ≫ AppClient ≫ Auditor` boundary; per-key ACL enforced in `CryptoService` before any unwrap |
 | **No custom cryptography** | `CryptoEngine` (JCA only) | 100% `javax.crypto` / `java.security`; Bouncy Castle confined to `Argon2TokenHashingService` |
 
 ### Component responsibilities (inside the Spring Boot 3.2 JVM)
