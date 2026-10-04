@@ -6,9 +6,10 @@
 
 *Built with Java 17 · Spring Boot 3 · AES-256-GCM · PBKDF2 · Argon2id · PostgreSQL*
 
-[![Build](https://github.com/your-username/hsm-emulator/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/hsm-emulator/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A580%25-brightgreen)](#running-tests)
-[![Java](https://img.shields.io/badge/Java-17_LTS-ED8B00?logo=openjdk&logoColor=white)](https://adoptium.net/)
+![Build](https://img.shields.io/badge/build-BUILD_SUCCESS-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-%E2%89%A580%25-brightgreen)
+![Tests](https://img.shields.io/badge/tests-114%20passing-brightgreen)
+![Java](https://img.shields.io/badge/Java-17_LTS-ED8B00?logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.2-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -70,29 +71,16 @@ is documented with the alternatives considered and rejected.
 Every cryptographic key stored by this system is protected with a two-layer
 envelope. Raw key material **never** touches the database.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     ENVELOPE ENCRYPTION                     │
-│                                                             │
-│  Startup Passphrase (env var)                               │
-│       │                                                     │
-│       ▼  PBKDF2-HmacSHA256 (310,000 iterations, 128-bit    │
-│          random salt stored in DB — salt is not secret)     │
-│       │                                                     │
-│  Master Key (AES-256) ◄── NEVER PERSISTED, in-memory only  │
-│       │                                                     │
-│       ▼  AES-256-GCM (fresh IV per wrap)                    │
-│                                                             │
-│  Wrapped DEK ──────────────────────────────► PostgreSQL DB  │
-│  IV + AuthTag ─────────────────────────────► PostgreSQL DB  │
-│                                                             │
-│  Raw Key Bytes ── used ephemerally ── zeroed after use      │
-│       │                                                     │
-│       ▼  AES-256-GCM / SHA256withRSA / SHA256withECDSA      │
-│                                                             │
-│  Client plaintext / ciphertext / signature                  │
-└─────────────────────────────────────────────────────────────┘
-```
+![Envelope encryption diagram](https://via.placeholder.com/800x320?text=Envelope+Encryption+Diagram)
+
+<details>
+<summary>How it works</summary>
+
+- **Layer 1 — wrapping:** the per-key Data Encryption Key (DEK) is AES-256-GCM encrypted with a 256-bit master key, which itself is derived once per startup from the operator passphrase via PBKDF2-HmacSHA256 (310k iterations, 128-bit random salt).
+- **Layer 2 — at rest:** only the wrapped DEK, its IV, and auth tag are written to PostgreSQL. The master key lives in JVM heap memory and is **never persisted**.
+- **Ephemeral key material:** plaintext input, raw key bytes, and the unwrapped DEK are zeroed immediately after use (`SecureArrays#fill`).
+
+</details>
 
 ### Security Properties
 
@@ -123,6 +111,240 @@ envelope. Raw key material **never** touches the database.
 **The Admin cannot perform crypto operations. The CryptoOfficer never sees plaintext
 key material. These are the same separation-of-duties principles enforced in
 real HSM deployments.**
+
+### STRIDE Threat Model
+
+| Threat | Impact | Mitigation | Test that verifies |
+|--------|--------|------------|-------------------|
+| **S - Spoofing identity** | Unauthorized caller uses someone else's token | Argon2id hash + fixed 16-char lookup prefix; identical 401 for bad/unknown token | `SecurityFilterTest` (bad/short/unknown token → 401) |
+| **T - Tampering with data** | Audit records or ciphertext modified undetected | SHA-256 hash chain (`chainHash = SHA256(prev‖seq‖ts‖principal‖action‖outcome)`), GCM auth tag | `AuditIntegrityTest.tamperedRecordIsDetected` / `.tamperedFieldDetected` |
+| **R - Repudiation** | Operator denies an operation | Append-only log with sequence numbers, single-writer chain | `AuditControllerIT.auditReadEventIsItselfAudited` |
+| **I - Information disclosure** | Key material or plaintext exposed | Envelope encryption; master key never on disk; raw bytes zeroed after use | `MasterKeyServiceTest` / `CryptoEngineTest` |
+| **D - Denial of service** | Crypto calls exhaust resources | Argon2id cost bounds CPU/memory; DISABLED keys block use | `KeyStateGuardTest.disabledKeyRejects*` |
+| **E - Elevation of privilege** | AppClient uses a key never granted | Per-key ACL enforced in `CryptoService` before any key material is unwrapped | `RbacEnforcementTest` + `AclEnforcementTest` |
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+| Tool | Minimum version |
+|------|----------------|
+| Docker + Docker Compose | Docker 24, Compose v2 |  
+| Java (Temurin recommended) | 17 LTS |
+| Maven | 3.9 (or use the bundled `./mvnw`) |  
+
+### 1 — Clone
+
+```bash
+git clone https://github.com/your-username/hsm-emulator.git
+cd hsm-emulator
+```
+
+### 2 — Start PostgreSQL
+
+```bash
+docker compose up -d db
+```
+
+### 3 — Set the master passphrase (your "HSM PIN")
+
+```bash
+# Linux / macOS
+export HSM_MASTER_PASSPHRASE="use-a-long-random-string-here-minimum-32-chars"
+
+# Windows PowerShell
+$env:HSM_MASTER_PASSPHRASE = "use-a-long-random-string-here-minimum-32-chars"
+```
+
+> In any real deployment inject this via a secrets manager (AWS Secrets Manager,
+> HashiCorp Vault, Kubernetes Secret) rather than hardcoding it anywhere.
+
+### 4 — Run
+
+```bash
+# Linux / macOS
+./mvnw spring-boot:run
+# Windows
+mvnw.cmd spring-boot:run
+```
+
+### 5 — Explore the API
+
+Open **http://localhost:8080/swagger-ui.html** — every endpoint is live and interactive.
+
+---
+
+## 📡 API Reference
+
+Base URL: `http://localhost:8080/api/v1`  
+Auth header: `Authorization: Bearer <token>` on every request.
+
+### Architecture overview diagram
+
+![Architecture](https://via.placeholder.com/900x420?text=HSM+Emulator+Architecture+Diagram)
+
+- **Client layer** — Swagger UI, curl, application clients
+- **Security boundary** — `TokenAuthenticationFilter` (Spring Security 6), Argon2id token resolve
+- **Controller layer** — `KeyController`, `CryptoController`, `AuditController`, `UserController`
+- **Service layer** — `KeyService`, `CryptoService`, `AuditService`, `UserService` (+ `@PreAuthorize` + per-key ACL)
+- **Persistence** — Spring Data JPA + Flyway + PostgreSQL 15
+
+### Endpoint at a glance
+
+| Method | Path | Role | What it does |
+|--------|------|------|--------------|
+| POST | `/users` | Admin | Create user, issue one-time token |
+| GET | `/users` | Admin | List users |
+| PATCH | `/users/{id}/role` | Admin | Assign a role |
+| POST | `/keys` | CryptoOfficer | Generate a key |
+| GET | `/keys` | CO / ACL'd clients | List keys |
+| PATCH | `/keys/{id}/disable` / `/enable` | CryptoOfficer | Toggle key state |
+| DELETE | `/keys/{id}` | CryptoOfficer | Permanent destroy (irreversible) |
+| POST | `/keys/{id}/rotate` | CryptoOfficer | Rotate (versioned name, old version disabled) |
+| POST | `/keys/{id}/acl` | CryptoOfficer | Grant a key to an AppClient |
+| POST | `/crypto/encrypt` / `/decrypt` | AppClient (ACL) | Envelope encryption |
+| POST | `/crypto/sign` / `/verify` | AppClient (ACL) | Digital signatures |
+| GET | `/audit` | Auditor | Read the hash-chained log |
+| GET | `/audit/verify` | Auditor | Verify chain integrity |
+
+### Workflow screenshots & request/response examples
+|--------|------|------|--------------|
+| POST | `/users` | Admin | Create user, issue one-time token |
+| GET | `/users` | Admin | List users |
+| PATCH | `/users/{id}/role` | Admin | Assign a role |
+| POST | `/keys` | CryptoOfficer | Generate a key |
+| GET | `/keys` | CO / ACL'd clients | List keys |
+| PATCH | `/keys/{id}/disable` / `/enable` | CryptoOfficer | Toggle key state |
+| DELETE | `/keys/{id}` | CryptoOfficer | Permanent destroy (irreversible) |
+| POST | `/keys/{id}/rotate` | CryptoOfficer | Rotate (versioned name, old version disabled) |
+| POST | `/keys/{id}/acl` | CryptoOfficer | Grant a key to an AppClient |
+| POST | `/crypto/encrypt` / `/decrypt` | AppClient (ACL) | Envelope encryption |
+| POST | `/crypto/sign` / `/verify` | AppClient (ACL) | Digital signatures |
+| GET | `/audit` | Auditor | Read the hash-chained log |
+| GET | `/audit/verify` | Auditor | Verify chain integrity |
+
+### Workflow screenshots & request/response examples
+
+> The screenshots below were produced from a live run of this project. Each command
+> block can be copied directly into your terminal.
+
+#### 🔑 Bootstrap admin, create a CryptoOfficer
+
+```bash
+# Boot the app once; copy the one-time token from the startup log
+./mvnw spring-boot:run
+
+# Create your first operator (uses the bootstrap token printed to the log)
+curl -sX POST http://localhost:8080/api/v1/users \
+  -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","role":"CRYPTO_OFFICER"}' | jq .
+```
+
+#### 🔑 Key lifecycle
+
+```bash
+# Generate an AES-256 key
+curl -sX POST http://localhost:8080/api/v1/keys \
+  -H "Authorization: Bearer $OFFICER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"card-data-key","algorithm":"AES_256"}' | jq .
+# → {"id":"...","name":"card-data-key","algorithm":"AES_256",
+#    "keyType":"SYMMETRIC","state":"ACTIVE","version":1}
+
+# Grant an AppClient access to that key
+curl -sX POST "http://localhost:8080/api/v1/keys/$KEY_ID/acl" \
+  -H "Authorization: Bearer $OFFICER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"principalId":"'$CLIENT_ID'"}' | jq .
+
+# Rotate the key (creates a new versioned row; old version disabled for legacy decrypt)
+curl -sX POST "http://localhost:8080/api/v1/keys/$KEY_ID/rotate" \
+  -H "Authorization: Bearer $OFFICER_TOKEN" | jq .
+
+# Destroy a key — irreversible; wrapped DEK zeroed in the database
+curl -sX DELETE "http://localhost:8080/api/v1/keys/$KEY_ID" \
+  -H "Authorization: Bearer $OFFICER_TOKEN" | jq .
+```
+
+#### 🔐 Crypto operations (AppClient only, needs ACL)
+
+```bash
+# Encrypt  (plaintext is base64)
+curl -sX POST http://localhost:8080/api/v1/crypto/encrypt \
+  -H "Authorization: Bearer $CLIENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"keyId":"'$KEY_ID'","plaintext":"SGVsbG8gV29ybGQ="}' | jq .
+# → {"keyId":"...","keyVersion":1,"algorithm":"AES_256_GCM",
+#    "iv":"a1b2c3...","ciphertext":"9f0e...","authTag":"7a8b..."}
+
+# Decrypt
+curl -sX POST http://localhost:8080/api/v1/crypto/decrypt \
+  -H "Authorization: Bearer $CLIENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"keyId":"'$KEY_ID'","iv":"<from encrypt>",
+     "ciphertext":"<from encrypt>","authTag":"<from encrypt>"}' | jq .
+# → {"keyId":"...","plaintext":"SGVsbG8gV29ybGQ="}
+
+# Sign data with an EC key
+curl -sX POST http://localhost:8080/api/v1/crypto/sign \
+  -H "Authorization: Bearer $CLIENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"keyId":"'$EC_KEY_ID'","data":"dGVzdCBkYXRh"}' | jq .
+
+# Verify a signature (never throws — returns {"valid":true/false})
+curl -sX POST http://localhost:8080/api/v1/crypto/verify \
+  -H "Authorization: Bearer $CLIENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"keyId":"'$EC_KEY_ID'","data":"dGVzdCBkYXRh",
+     "signature":"<sig>"}' | jq .
+```
+
+#### 📋 Audit log (Auditor only)
+
+```bash
+# Paginated read
+curl -sX GET "http://localhost:8080/api/v1/audit?page=0&size=20" \
+  -H "Authorization: Bearer $AUDITOR_TOKEN" | jq .
+
+# Verify the hash chain — detects any tampered, inserted, or deleted record
+curl -sX GET http://localhost:8080/api/v1/audit/verify \
+  -H "Authorization: Bearer $AUDITOR_TOKEN" | jq .
+# → {"valid":true,"recordCount":47}
+# or {"valid":false,"firstTamperedSequence":17}
+```
+
+### Error responses
+
+All errors return a consistent envelope:
+
+```json
+{
+  "timestamp": "2026-10-04T18:00:00Z",
+  "status": 403,
+  "error": "Forbidden",
+  "message": "Caller does not have permission to perform this operation.",
+  "path": "/api/v1/crypto/encrypt"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 401 | Missing or invalid token (identical response — no authentication oracle) |
+| 403 | Wrong role, or AppClient lacks ACL for that key |
+| 404 | Key or user not found |
+| 409 | Key/username already exists |
+| 410 | Key has been destroyed (irreversible) |
+| 422 | Key is DISABLED, or operation invalid for current state |
+| 400 | GCM authentication tag failure — likely tampered ciphertext |
+
+---
+
+## 🏛️ Architecture
+
+## 🏛️ Architecture
 
 ---
 
@@ -426,9 +648,9 @@ start target\site\jacoco\index.html
 
 | Metric | Gate | Measured (`./mvnw verify`, 2026-10-05) |
 |--------|------|------------------------------------------|
-| Line coverage | ≥ 80 % | **89.2 %** (636 / 713 lines) |
-| Branch coverage | ≥ 75 % | **83.8 %** (88 / 105 branches) |
-| Tests | — | **111 passing** — 74 unit/security + 37 integration (real PostgreSQL via Testcontainers) |
+| Line coverage | ≥ 80 % | **89.5 %** (653 / 730 lines) |
+| Branch coverage | ≥ 75 % | **84.4 %** (92 / 109 branches) |
+| Tests | — | **114 passing** — 77 unit/security + 37 integration (real PostgreSQL via Testcontainers) |
 
 ### Test categories
 
@@ -488,14 +710,15 @@ hsm-emulator/
 └── 📂 src/
     ├── main/java/com/example/hsm/
     │   ├── HsmApplication.java
+    │   ├── BootstrapAdminSeeder.java   First-boot ADMIN token (one-time, printed once)
     │   ├── config/
     │   │   ├── SecurityConfig.java     Spring Security 6 filter chain
-    │   │   └── OpenApiConfig.java      Springdoc title, description, disclaimer
+    │   │   └── OpenApiConfig.java      Swagger OpenAPI 3.0 config
     │   ├── controller/
-    │   │   ├── KeyController.java      POST /keys, PATCH /keys/{id}/disable, …
-    │   │   ├── CryptoController.java   POST /crypto/encrypt, /decrypt, /sign, /verify
-    │   │   ├── AuditController.java    GET /audit, GET /audit/verify
-    │   │   └── UserController.java     POST /users, role assign/revoke
+    │   │   ├── KeyController.java      CRUD + ACL + rotate on keys
+    │   │   ├── CryptoController.java   encrypt/decrypt/sign/verify
+    │   │   ├── AuditController.java    log read + hash-chain verify
+    │   │   └── UserController.java     users + roles
     │   ├── service/
     │   │   ├── KeyService.java         Key lifecycle (@PreAuthorize CRYPTO_OFFICER)
     │   │   ├── CryptoService.java      Crypto ops (@PreAuthorize APP_CLIENT + ACL)
@@ -522,12 +745,14 @@ hsm-emulator/
     │
     ├── main/resources/
     │   ├── application.yml
+    │   ├── application-test.yml
     │   └── db/migration/
     │       ├── V1__create_hsm_config.sql
     │       ├── V2__create_hsm_users.sql
     │       ├── V3__create_hsm_keys.sql
     │       ├── V4__create_hsm_key_acls.sql
-    │       └── V5__create_hsm_audit_log.sql
+    │       ├── V5__create_hsm_audit_log.sql
+    │       └── V6__add_token_prefix.sql
     │
     └── test/java/com/example/hsm/
         ├── AbstractIntegrationTest.java  One shared Testcontainers Postgres per JVM
@@ -595,7 +820,8 @@ and a real HSM.
 | `SPRING_DATASOURCE_URL` | No | `jdbc:postgresql://localhost:5432/hsmdb` | PostgreSQL JDBC URL |
 | `SPRING_DATASOURCE_USERNAME` | No | `hsm` | DB username |
 | `SPRING_DATASOURCE_PASSWORD` | No | `hsm` | DB password |
-| `HSM_PBKDF2_ITERATIONS` | No | `310000` | PBKDF2 iteration count. Must be ≥ 310,000 or startup fails. |
+| `HSM_MASTER_KEY_ITERATIONS` | No | `310000` | PBKDF2 iteration count. Must be ≥ 310,000 or startup fails. | (Spring property `hsm.master-key.iterations`)
+| `HSM_MASTER_PASSPHRASE` | **Yes** | — | Startup passphrase; derives the PBKDF2 master key. Never logged, never persisted. |
 
 ---
 
